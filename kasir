@@ -1,0 +1,891 @@
+<?php
+session_start();
+
+// ============================================
+// KONEKSI DATABASE - LAB HOSTING
+// ============================================
+$host = "localhost";
+$user = "root";
+$pass = "";
+$db   = "labalvino11db1";
+
+mysqli_report(MYSQLI_REPORT_OFF);
+$conn = @mysqli_connect($host, $user, $pass, $db);
+
+if (!$conn) {
+    die("<div style='color:red; padding:20px; font-family:sans-serif;'>
+            <h2>Koneksi Database Gagal!</h2>
+            <p>Error: " . mysqli_connect_error() . "</p>
+            <p>Pastikan database 'db_kasir_cafe' sudah dibuat. Import file <b>database.sql</b> terlebih dahulu.</p>
+         </div>");
+}
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+function formatRupiah($angka) {
+    return 'Rp ' . number_format($angka, 0, ',', '.');
+}
+
+function generateNoTransaksi($conn) {
+    $today = date('Ymd');
+    $query = "SELECT COUNT(*) as total FROM tb_transaksi WHERE DATE(tanggal) = CURDATE()";
+    $result = mysqli_query($conn, $query);
+    $row = mysqli_fetch_assoc($result);
+    $no = $row['total'] + 1;
+    return 'TRX-' . $today . '-' . str_pad($no, 3, '0', STR_PAD_LEFT);
+}
+
+// ============================================
+// INISIALISASI KERANJANG
+// ============================================
+if (!isset($_SESSION['keranjang'])) {
+    $_SESSION['keranjang'] = [];
+}
+
+$pesan = "";
+$page = isset($_GET['page']) ? $_GET['page'] : 'kasir';
+
+// ============================================
+// PROSES KASIR
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['tambah_keranjang'])) {
+    $id_menu = (int)$_POST['id_menu'];
+    $qty = (int)$_POST['qty'];
+    
+    $query = "SELECT * FROM tb_menu WHERE id_menu = $id_menu";
+    $result = mysqli_query($conn, $query);
+    $menu = mysqli_fetch_assoc($result);
+    
+    if ($menu && $menu['stok'] >= $qty) {
+        $found = false;
+        foreach ($_SESSION['keranjang'] as &$item) {
+            if ($item['id_menu'] == $id_menu) {
+                $item['qty'] += $qty;
+                $found = true;
+                break;
+            }
+        }
+        if (!$found) {
+            $_SESSION['keranjang'][] = [
+                'id_menu' => $id_menu,
+                'nama_menu' => $menu['nama_menu'],
+                'harga' => $menu['harga'],
+                'hpp' => $menu['hpp'],
+                'qty' => $qty
+            ];
+        }
+        $pesan = '<div class="alert alert-success">Menu ditambahkan ke keranjang!</div>';
+    } else {
+        $pesan = '<div class="alert alert-danger">Stok tidak mencukupi!</div>';
+    }
+}
+
+if (isset($_GET['hapus_keranjang'])) {
+    $id_menu = (int)$_GET['hapus_keranjang'];
+    foreach ($_SESSION['keranjang'] as $key => $item) {
+        if ($item['id_menu'] == $id_menu) {
+            unset($_SESSION['keranjang'][$key]);
+            $_SESSION['keranjang'] = array_values($_SESSION['keranjang']);
+            break;
+        }
+    }
+    header('Location: kasir.php?page=kasir');
+    exit;
+}
+
+if (isset($_GET['kosongkan'])) {
+    $_SESSION['keranjang'] = [];
+    header('Location: kasir.php?page=kasir');
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['proses_bayar'])) {
+    $bayar = (int)$_POST['bayar'];
+    $total = 0;
+    foreach ($_SESSION['keranjang'] as $item) {
+        $total += $item['harga'] * $item['qty'];
+    }
+    
+    if ($bayar < $total) {
+        $pesan = '<div class="alert alert-danger">Uang bayar kurang! Total: ' . formatRupiah($total) . '</div>';
+    } else {
+        $no_transaksi = generateNoTransaksi($conn);
+        $kembalian = $bayar - $total;
+        
+        $query = "INSERT INTO tb_transaksi (no_transaksi, total_harga, bayar, kembalian) 
+                  VALUES ('$no_transaksi', $total, $bayar, $kembalian)";
+        mysqli_query($conn, $query);
+        $id_transaksi = mysqli_insert_id($conn);
+        
+        $total_hpp = 0;
+        foreach ($_SESSION['keranjang'] as $item) {
+            $id_menu = $item['id_menu'];
+            $qty = $item['qty'];
+            $harga = $item['harga'];
+            $hpp = $item['hpp'];
+            $subtotal = $harga * $qty;
+            $total_hpp += $hpp * $qty;
+            
+            mysqli_query($conn, "INSERT INTO tb_detail_transaksi 
+                (id_transaksi, id_menu, jumlah_beli, harga, total) 
+                VALUES ($id_transaksi, $id_menu, $qty, $harga, $subtotal)");
+            
+            mysqli_query($conn, "UPDATE tb_menu SET stok = stok - $qty WHERE id_menu = $id_menu");
+        }
+        
+        // Simpan ke modal sebagai keuntungan penjualan
+        $keuntungan = $total - $total_hpp;
+        mysqli_query($conn, "INSERT INTO tb_modal (tanggal, keterangan, jumlah, jenis) 
+            VALUES (CURDATE(), 'Keuntungan Penjualan $no_transaksi', $keuntungan, 'modal')");
+        
+        $_SESSION['keranjang'] = [];
+        $pesan = '<div class="alert alert-success">
+                    <h5><i class="fa-solid fa-check-circle me-2"></i>Transaksi Berhasil!</h5>
+                    <p class="mb-1">No Transaksi: <strong>' . $no_transaksi . '</strong></p>
+                    <p class="mb-1">Total: <strong>' . formatRupiah($total) . '</strong></p>
+                    <p class="mb-1">Bayar: <strong>' . formatRupiah($bayar) . '</strong></p>
+                    <p class="mb-0">Kembalian: <strong>' . formatRupiah($kembalian) . '</strong></p>
+                  </div>';
+    }
+}
+
+// ============================================
+// PROSES MENU
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['tambah_menu'])) {
+    $nama = mysqli_real_escape_string($conn, $_POST['nama_menu']);
+    $harga = (int)$_POST['harga'];
+    $stok = (int)$_POST['stok'];
+    $hpp = (int)$_POST['hpp'];
+    $kategori = mysqli_real_escape_string($conn, $_POST['kategori']);
+    
+    $query = "INSERT INTO tb_menu (nama_menu, harga, stok, hpp, kategori) 
+              VALUES ('$nama', $harga, $stok, $hpp, '$kategori')";
+    
+    if (mysqli_query($conn, $query)) {
+        $pesan = '<div class="alert alert-success">Menu berhasil ditambahkan!</div>';
+    } else {
+        $pesan = '<div class="alert alert-danger">Gagal menambahkan menu!</div>';
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_menu'])) {
+    $id = (int)$_POST['id_menu'];
+    $nama = mysqli_real_escape_string($conn, $_POST['nama_menu']);
+    $harga = (int)$_POST['harga'];
+    $stok = (int)$_POST['stok'];
+    $hpp = (int)$_POST['hpp'];
+    $kategori = mysqli_real_escape_string($conn, $_POST['kategori']);
+    
+    $query = "UPDATE tb_menu SET 
+              nama_menu = '$nama', 
+              harga = $harga, 
+              stok = $stok, 
+              hpp = $hpp, 
+              kategori = '$kategori' 
+              WHERE id_menu = $id";
+    
+    if (mysqli_query($conn, $query)) {
+        $pesan = '<div class="alert alert-success">Menu berhasil diupdate!</div>';
+    } else {
+        $pesan = '<div class="alert alert-danger">Gagal update menu!</div>';
+    }
+}
+
+if (isset($_GET['hapus_menu'])) {
+    $id = (int)$_GET['hapus_menu'];
+    $query = "DELETE FROM tb_menu WHERE id_menu = $id";
+    if (mysqli_query($conn, $query)) {
+        $pesan = '<div class="alert alert-success">Menu berhasil dihapus!</div>';
+    } else {
+        $pesan = '<div class="alert alert-danger">Gagal menghapus menu!</div>';
+    }
+}
+
+// ============================================
+// PROSES HPP & MODAL
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['tambah_modal'])) {
+    $tanggal = $_POST['tanggal'];
+    $keterangan = mysqli_real_escape_string($conn, $_POST['keterangan']);
+    $jumlah = (int)$_POST['jumlah'];
+    $jenis = $_POST['jenis'];
+    
+    if ($jenis === 'pengeluaran') {
+        $jumlah = -abs($jumlah);
+    }
+    
+    $query = "INSERT INTO tb_modal (tanggal, keterangan, jumlah, jenis) 
+              VALUES ('$tanggal', '$keterangan', $jumlah, '$jenis')";
+    
+    if (mysqli_query($conn, $query)) {
+        $pesan = '<div class="alert alert-success">Data berhasil ditambahkan!</div>';
+    } else {
+        $pesan = '<div class="alert alert-danger">Gagal menambahkan data!</div>';
+    }
+}
+
+if (isset($_GET['hapus_modal'])) {
+    $id = (int)$_GET['hapus_modal'];
+    $query = "DELETE FROM tb_modal WHERE id_modal = $id";
+    if (mysqli_query($conn, $query)) {
+        $pesan = '<div class="alert alert-success">Data berhasil dihapus!</div>';
+    } else {
+        $pesan = '<div class="alert alert-danger">Gagal menghapus data!</div>';
+    }
+}
+
+// ============================================
+// AMBIL DATA
+// ============================================
+$query_menu = "SELECT * FROM tb_menu ORDER BY kategori, nama_menu";
+$result_menu = mysqli_query($conn, $query_menu);
+
+$total_keranjang = 0;
+foreach ($_SESSION['keranjang'] as $item) {
+    $total_keranjang += $item['harga'] * $item['qty'];
+}
+
+// Data HPP & Modal
+$query_modal = "SELECT SUM(jumlah) as total FROM tb_modal WHERE jenis = 'modal'";
+$result_modal = mysqli_query($conn, $query_modal);
+$total_modal = mysqli_fetch_assoc($result_modal)['total'] ?? 0;
+
+$query_pengeluaran = "SELECT SUM(ABS(jumlah)) as total FROM tb_modal WHERE jenis = 'pengeluaran'";
+$result_pengeluaran = mysqli_query($conn, $query_pengeluaran);
+$total_pengeluaran = mysqli_fetch_assoc($result_pengeluaran)['total'] ?? 0;
+
+$saldo = $total_modal - $total_pengeluaran;
+
+$query_riwayat_modal = "SELECT * FROM tb_modal ORDER BY tanggal DESC, id_modal DESC";
+$result_riwayat_modal = mysqli_query($conn, $query_riwayat_modal);
+
+// Data Laporan
+$dari = isset($_GET['dari']) ? $_GET['dari'] : date('Y-m-01');
+$sampai = isset($_GET['sampai']) ? $_GET['sampai'] : date('Y-m-d');
+
+$query_total_transaksi = "SELECT COUNT(*) as total FROM tb_transaksi WHERE DATE(tanggal) BETWEEN '$dari' AND '$sampai'";
+$result_total = mysqli_query($conn, $query_total_transaksi);
+$total_transaksi = mysqli_fetch_assoc($result_total)['total'];
+
+$query_total_penjualan = "SELECT SUM(total_harga) as total FROM tb_transaksi WHERE DATE(tanggal) BETWEEN '$dari' AND '$sampai'";
+$result_penjualan = mysqli_query($conn, $query_total_penjualan);
+$total_penjualan = mysqli_fetch_assoc($result_penjualan)['total'] ?? 0;
+
+$query_total_hpp = "
+    SELECT SUM(dt.jumlah_beli * m.hpp) as total_hpp 
+    FROM tb_detail_transaksi dt 
+    JOIN tb_transaksi t ON dt.id_transaksi = t.id_transaksi 
+    JOIN tb_menu m ON dt.id_menu = m.id_menu 
+    WHERE DATE(t.tanggal) BETWEEN '$dari' AND '$sampai'
+";
+$result_hpp = mysqli_query($conn, $query_total_hpp);
+$total_hpp = mysqli_fetch_assoc($result_hpp)['total_hpp'] ?? 0;
+
+// Hitung pengeluaran dalam periode laporan
+$query_pengeluaran_periode = "SELECT SUM(ABS(jumlah)) as total FROM tb_modal WHERE jenis = 'pengeluaran' AND tanggal BETWEEN '$dari' AND '$sampai'";
+$result_pengeluaran_periode = mysqli_query($conn, $query_pengeluaran_periode);
+$total_pengeluaran_periode = mysqli_fetch_assoc($result_pengeluaran_periode)['total'] ?? 0;
+
+$total_keuntungan = $total_penjualan - $total_hpp - $total_pengeluaran_periode;
+
+$query_terlaris = "
+    SELECT m.nama_menu, SUM(dt.jumlah_beli) as total_qty, SUM(dt.total) as total_penjualan
+    FROM tb_detail_transaksi dt
+    JOIN tb_menu m ON dt.id_menu = m.id_menu
+    JOIN tb_transaksi t ON dt.id_transaksi = t.id_transaksi
+    WHERE DATE(t.tanggal) BETWEEN '$dari' AND '$sampai'
+    GROUP BY dt.id_menu
+    ORDER BY total_qty DESC
+    LIMIT 5
+";
+$result_terlaris = mysqli_query($conn, $query_terlaris);
+
+$query_riwayat = "
+    SELECT t.*, 
+           COUNT(dt.id_detail) as jumlah_item,
+           SUM(dt.jumlah_beli * m.hpp) as hpp_transaksi
+    FROM tb_transaksi t
+    LEFT JOIN tb_detail_transaksi dt ON t.id_transaksi = dt.id_transaksi
+    LEFT JOIN tb_menu m ON dt.id_menu = m.id_menu
+    WHERE DATE(t.tanggal) BETWEEN '$dari' AND '$sampai'
+    GROUP BY t.id_transaksi
+    ORDER BY t.tanggal DESC
+";
+$result_riwayat = mysqli_query($conn, $query_riwayat);
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kasir - Cafe Alvino Ilham</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; min-height: 100vh; }
+        .navbar { background: linear-gradient(135deg, #2c3e50, #3498db); padding: 15px 0; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .navbar-brand { color: white !important; font-weight: bold; font-size: 1.5rem; }
+        .navbar-nav .nav-link { color: rgba(255,255,255,0.9) !important; margin: 0 10px; transition: all 0.3s; }
+        .navbar-nav .nav-link:hover, .navbar-nav .nav-link.active { color: white !important; background: rgba(255,255,255,0.1); border-radius: 5px; }
+        .card { border: none; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); transition: transform 0.2s, box-shadow 0.2s; }
+        .card:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,0,0,0.12); }
+        .card-header { background: white; border-bottom: 2px solid #f0f0f0; border-radius: 12px 12px 0 0 !important; padding: 15px 20px; }
+        .card-title { color: #2c3e50; font-weight: 600; }
+        .card-menu { cursor: pointer; overflow: hidden; }
+        .card-menu .card-body { padding: 15px; }
+        .menu-disabled { opacity: 0.5; filter: grayscale(80%); pointer-events: none; }
+        .badge { padding: 5px 10px; border-radius: 20px; font-size: 0.75rem; }
+        .form-control { border-radius: 8px; border: 1px solid #ddd; padding: 10px 15px; }
+        .form-control:focus { border-color: #3498db; box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1); }
+        .btn { border-radius: 8px; padding: 10px 20px; font-weight: 500; transition: all 0.3s; }
+        .btn-primary { background: linear-gradient(135deg, #3498db, #2980b9); border: none; }
+        .btn-primary:hover { background: linear-gradient(135deg, #2980b9, #3498db); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(52, 152, 219, 0.4); }
+        .btn-success { background: linear-gradient(135deg, #27ae60, #2ecc71); border: none; }
+        .btn-success:hover { background: linear-gradient(135deg, #2ecc71, #27ae60); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(39, 174, 96, 0.4); }
+        .btn-danger { background: linear-gradient(135deg, #e74c3c, #c0392b); border: none; }
+        .btn-warning { background: linear-gradient(135deg, #f39c12, #e67e22); border: none; color: white; }
+        .table { background: white; border-radius: 12px; overflow: hidden; }
+        .table thead th { background: #2c3e50; color: white; border: none; padding: 15px; }
+        .table tbody td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; }
+        .table tbody tr:hover { background: #f8f9fa; }
+        .alert { border-radius: 10px; padding: 15px 20px; border: none; }
+        .alert-success { background: #d4edda; color: #155724; }
+        .alert-danger { background: #f8d7da; color: #721c24; }
+        .keranjang-item { background: #f8f9fa; border-radius: 8px; padding: 10px 15px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .stat-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 12px; text-align: center; }
+        .stat-card h3 { font-size: 2rem; font-weight: bold; margin: 10px 0; }
+        .stat-card p { opacity: 0.9; }
+        .stat-card.success { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); }
+        .stat-card.warning { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+        .stat-card.info { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
+        .modal-content { border-radius: 15px; border: none; }
+        .modal-header { background: linear-gradient(135deg, #2c3e50, #3498db); color: white; border-radius: 15px 15px 0 0; }
+        @media print { .navbar, .btn, .no-print { display: none !important; } .card { box-shadow: none; border: 1px solid #ddd; } }
+        @media (max-width: 768px) { .navbar-brand { font-size: 1.2rem; } .card { margin-bottom: 15px; } }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark mb-4">
+    <div class="container">
+        <a class="navbar-brand" href="kasir.php">
+            <i class="fa-solid fa-mug-hot me-2"></i>Cafe Alvino Ilham
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav ms-auto">
+                <li class="nav-item">
+                    <a class="nav-link <?php echo $page === 'kasir' ? 'active' : ''; ?>" href="kasir.php?page=kasir">
+                        <i class="fa-solid fa-cash-register me-1"></i>Kasir
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link <?php echo $page === 'menu' ? 'active' : ''; ?>" href="kasir.php?page=menu">
+                        <i class="fa-solid fa-utensils me-1"></i>Menu
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link <?php echo $page === 'hpp' ? 'active' : ''; ?>" href="kasir.php?page=hpp">
+                        <i class="fa-solid fa-coins me-1"></i>HPP & Modal
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link <?php echo $page === 'laporan' ? 'active' : ''; ?>" href="kasir.php?page=laporan">
+                        <i class="fa-solid fa-chart-line me-1"></i>Laporan
+                    </a>
+                </li>
+            </ul>
+        </div>
+    </div>
+</nav>
+
+<div class="container mb-5">
+    <?php echo $pesan; ?>
+    
+    <?php if ($page === 'kasir') : ?>
+    <!-- ============================================
+         HALAMAN KASIR
+         ============================================ -->
+    <div class="row g-4">
+        <div class="col-md-7">
+            <h4 class="fw-bold mb-3"><i class="fa-solid fa-utensils me-2"></i>Daftar Menu</h4>
+            <div class="mb-3">
+                <select class="form-select" id="filterKategori" onchange="filterMenu()">
+                    <option value="">Semua Kategori</option>
+                    <option value="Makanan">Makanan</option>
+                    <option value="Minuman">Minuman</option>
+                </select>
+            </div>
+            <div class="row row-cols-1 row-cols-md-2 g-3" id="daftarMenu">
+                <?php mysqli_data_seek($result_menu, 0); while ($menu = mysqli_fetch_assoc($result_menu)) : ?>
+                    <?php $is_habis = ($menu['stok'] <= 0); ?>
+                    <div class="col menu-item" data-kategori="<?php echo $menu['kategori']; ?>">
+                        <div class="card card-menu h-100 shadow-sm <?php echo $is_habis ? 'menu-disabled' : ''; ?>">
+                            <div class="card-body d-flex flex-column justify-content-between">
+                                <div>
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <h5 class="card-title fw-bold m-0"><?php echo htmlspecialchars($menu['nama_menu']); ?></h5>
+                                        <?php if ($is_habis) : ?>
+                                            <span class="badge bg-danger">HABIS</span>
+                                        <?php else : ?>
+                                            <span class="badge bg-success">Stok: <?php echo $menu['stok']; ?></span>
+                                        <?php endif; ?>
+                                    </div>
+                                    <span class="badge bg-secondary mb-2"><?php echo $menu['kategori']; ?></span>
+                                    <p class="card-text text-primary fw-bold fs-5 mb-1"><?php echo formatRupiah($menu['harga']); ?></p>
+                                    <small class="text-muted">HPP: <?php echo formatRupiah($menu['hpp']); ?></small>
+                                </div>
+                                <?php if (!$is_habis) : ?>
+                                    <form method="POST" class="d-flex gap-2 mt-3">
+                                        <input type="hidden" name="id_menu" value="<?php echo $menu['id_menu']; ?>">
+                                        <input type="number" name="qty" class="form-control form-control-sm" value="1" min="1" max="<?php echo $menu['stok']; ?>" style="width: 70px;">
+                                        <button type="submit" name="tambah_keranjang" class="btn btn-primary btn-sm flex-fill">
+                                            <i class="fa-solid fa-cart-plus me-1"></i> Tambah
+                                        </button>
+                                    </form>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+                <?php endwhile; ?>
+            </div>
+        </div>
+
+        <div class="col-md-5">
+            <div class="card shadow-sm sticky-top" style="top: 20px;">
+                <div class="card-header py-3 d-flex justify-content-between align-items-center">
+                    <h5 class="card-title fw-bold m-0"><i class="fa-solid fa-receipt me-2"></i>Keranjang</h5>
+                    <?php if (!empty($_SESSION['keranjang'])) : ?>
+                        <a href="kasir.php?page=kasir&kosongkan=1" class="btn btn-sm btn-outline-danger">
+                            <i class="fa-solid fa-trash me-1"></i>Kosongkan
+                        </a>
+                    <?php endif; ?>
+                </div>
+                <div class="card-body">
+                    <?php if (empty($_SESSION['keranjang'])) : ?>
+                        <p class="text-muted text-center py-4">Keranjang kosong</p>
+                    <?php else : ?>
+                        <?php foreach ($_SESSION['keranjang'] as $item) : ?>
+                            <div class="keranjang-item">
+                                <div>
+                                    <strong><?php echo htmlspecialchars($item['nama_menu']); ?></strong>
+                                    <small class="text-muted d-block"><?php echo formatRupiah($item['harga']); ?> x <?php echo $item['qty']; ?></small>
+                                </div>
+                                <div class="d-flex align-items-center gap-2">
+                                    <strong class="text-primary"><?php echo formatRupiah($item['harga'] * $item['qty']); ?></strong>
+                                    <a href="kasir.php?page=kasir&hapus_keranjang=<?php echo $item['id_menu']; ?>" class="text-danger">
+                                        <i class="fa-solid fa-times"></i>
+                                    </a>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                    <hr>
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <span class="fs-5 fw-bold">Total:</span>
+                        <span class="fs-3 fw-bold text-success"><?php echo formatRupiah($total_keranjang); ?></span>
+                    </div>
+                    <form method="POST">
+                        <div class="mb-3">
+                            <label class="form-label">Uang Bayar</label>
+                            <input type="number" name="bayar" class="form-control form-control-lg" placeholder="Masukkan nominal..." min="0" required>
+                        </div>
+                        <button type="submit" name="proses_bayar" class="btn btn-success btn-lg w-100 fw-bold" <?php echo empty($_SESSION['keranjang']) ? 'disabled' : ''; ?>>
+                            <i class="fa-solid fa-paper-plane me-2"></i>Proses Bayar
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <?php elseif ($page === 'menu') : ?>
+    <!-- ============================================
+         HALAMAN MENU
+         ============================================ -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h4 class="fw-bold"><i class="fa-solid fa-utensils me-2"></i>Manajemen Menu</h4>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modalTambah">
+            <i class="fa-solid fa-plus me-1"></i>Tambah Menu
+        </button>
+    </div>
+    <div class="card shadow-sm">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>No</th><th>Nama Menu</th><th>Kategori</th><th>Harga Jual</th><th>HPP</th><th>Margin</th><th>Stok</th><th>Aksi</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php 
+                        $no = 1;
+                        mysqli_data_seek($result_menu, 0);
+                        while ($menu = mysqli_fetch_assoc($result_menu)) : 
+                            $margin = $menu['harga'] - $menu['hpp'];
+                            $margin_persen = $menu['harga'] > 0 ? round(($margin / $menu['harga']) * 100, 1) : 0;
+                        ?>
+                            <tr>
+                                <td><?php echo $no++; ?></td>
+                                <td><strong><?php echo htmlspecialchars($menu['nama_menu']); ?></strong></td>
+                                <td><span class="badge bg-secondary"><?php echo $menu['kategori']; ?></span></td>
+                                <td><?php echo formatRupiah($menu['harga']); ?></td>
+                                <td><?php echo formatRupiah($menu['hpp']); ?></td>
+                                <td><span class="badge bg-success"><?php echo formatRupiah($margin); ?></span> <small class="text-muted">(<?php echo $margin_persen; ?>%)</small></td>
+                                <td><?php if ($menu['stok'] <= 5) : ?><span class="badge bg-danger"><?php echo $menu['stok']; ?></span><?php else : ?><span class="badge bg-success"><?php echo $menu['stok']; ?></span><?php endif; ?></td>
+                                <td>
+                                    <button class="btn btn-sm btn-warning" onclick='editMenu(<?php echo json_encode($menu); ?>)'><i class="fa-solid fa-edit"></i></button>
+                                    <a href="kasir.php?page=menu&hapus_menu=<?php echo $menu['id_menu']; ?>" class="btn btn-sm btn-danger" onclick="return confirm('Yakin hapus menu ini?')"><i class="fa-solid fa-trash"></i></a>
+                                </td>
+                            </tr>
+                        <?php endwhile; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Tambah Menu -->
+    <div class="modal fade" id="modalTambah" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="fa-solid fa-plus me-2"></i>Tambah Menu</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label">Nama Menu</label>
+                            <input type="text" name="nama_menu" class="form-control" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Kategori</label>
+                            <select name="kategori" class="form-select" required>
+                                <option value="Makanan">Makanan</option>
+                                <option value="Minuman">Minuman</option>
+                            </select>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Harga Jual (Rp)</label>
+                                <input type="number" name="harga" class="form-control" required min="0">
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">HPP (Rp)</label>
+                                <input type="number" name="hpp" class="form-control" required min="0">
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Stok Awal</label>
+                            <input type="number" name="stok" class="form-control" required min="0">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                        <button type="submit" name="tambah_menu" class="btn btn-primary">Simpan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Edit Menu -->
+    <div class="modal fade" id="modalEdit" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="fa-solid fa-edit me-2"></i>Edit Menu</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <input type="hidden" name="id_menu" id="edit_id">
+                        <div class="mb-3">
+                            <label class="form-label">Nama Menu</label>
+                            <input type="text" name="nama_menu" id="edit_nama" class="form-control" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Kategori</label>
+                            <select name="kategori" id="edit_kategori" class="form-select" required>
+                                <option value="Makanan">Makanan</option>
+                                <option value="Minuman">Minuman</option>
+                            </select>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Harga Jual (Rp)</label>
+                                <input type="number" name="harga" id="edit_harga" class="form-control" required min="0">
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">HPP (Rp)</label>
+                                <input type="number" name="hpp" id="edit_hpp" class="form-control" required min="0">
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Stok</label>
+                            <input type="number" name="stok" id="edit_stok" class="form-control" required min="0">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                        <button type="submit" name="edit_menu" class="btn btn-primary">Update</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <?php elseif ($page === 'hpp') : ?>
+    <!-- ============================================
+         HALAMAN HPP & MODAL (MANUAL + OTOMATIS)
+         ============================================ -->
+    <h4 class="fw-bold mb-4"><i class="fa-solid fa-coins me-2"></i>HPP & Modal Awal</h4>
+    <div class="row g-4 mb-4">
+        <div class="col-md-4">
+            <div class="stat-card">
+                <i class="fa-solid fa-receipt fa-2x mb-2"></i>
+                <h3><?php echo $total_transaksi; ?></h3>
+                <p>Total Transaksi</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="stat-card success">
+                <i class="fa-solid fa-money-bill-wave fa-2x mb-2"></i>
+                <h3><?php echo formatRupiah($total_penjualan); ?></h3>
+                <p>Total Penjualan</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="stat-card warning">
+                <i class="fa-solid fa-coins fa-2x mb-2"></i>
+                <h3><?php echo formatRupiah($total_hpp); ?></h3>
+                <p>Total HPP (Modal)</p>
+            </div>
+        </div>
+    </div>
+    <div class="row g-4 mb-4">
+        <div class="col-md-6">
+            <div class="stat-card warning">
+                <i class="fa-solid fa-money-bill-trend-down fa-2x mb-2"></i>
+                <h3><?php echo formatRupiah($total_pengeluaran_periode); ?></h3>
+                <p>Total Pengeluaran</p>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="stat-card info">
+                <i class="fa-solid fa-chart-line fa-2x mb-2"></i>
+                <h3><?php echo formatRupiah($total_keuntungan); ?></h3>
+                <p>Keuntungan Bersih (Setelah Pengeluaran)</p>
+            </div>
+        </div>
+    </div>
+    <div class="row g-4">
+        <div class="col-md-4">
+            <div class="card shadow-sm">
+                <div class="card-header">
+                    <h5 class="card-title fw-bold m-0"><i class="fa-solid fa-plus me-2"></i>Tambah Modal Manual</h5>
+                </div>
+                <div class="card-body">
+                    <form method="POST">
+                        <div class="mb-3">
+                            <label class="form-label">Jenis</label>
+                            <select name="jenis" class="form-select" required>
+                                <option value="modal">Modal Masuk</option>
+                                <option value="pengeluaran">Pengeluaran</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Tanggal</label>
+                            <input type="date" name="tanggal" class="form-control" required value="<?php echo date('Y-m-d'); ?>">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Keterangan</label>
+                            <input type="text" name="keterangan" class="form-control" required placeholder="cth: Modal Awal Usaha">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Jumlah (Rp)</label>
+                            <input type="number" name="jumlah" class="form-control" required min="0" placeholder="0">
+                        </div>
+                        <button type="submit" name="tambah_modal" class="btn btn-primary w-100"><i class="fa-solid fa-save me-1"></i>Simpan</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-8">
+            <div class="card shadow-sm">
+                <div class="card-header">
+                    <h5 class="card-title fw-bold m-0"><i class="fa-solid fa-history me-2"></i>Riwayat Modal (Manual + Otomatis dari Transaksi)</h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead>
+                                <tr><th>Tanggal</th><th>Keterangan</th><th>Jenis</th><th>Jumlah</th><th>Aksi</th></tr>
+                            </thead>
+                            <tbody>
+                                <?php while ($row = mysqli_fetch_assoc($result_riwayat_modal)) : ?>
+                                    <tr>
+                                        <td><?php echo date('d/m/Y', strtotime($row['tanggal'])); ?></td>
+                                        <td><?php echo htmlspecialchars($row['keterangan']); ?></td>
+                                        <td><?php if ($row['jenis'] === 'modal') : ?><span class="badge bg-success">Modal</span><?php else : ?><span class="badge bg-danger">Pengeluaran</span><?php endif; ?></td>
+                                        <td class="<?php echo $row['jumlah'] >= 0 ? 'text-success' : 'text-danger'; ?> fw-bold"><?php echo $row['jumlah'] >= 0 ? '+' : ''; ?><?php echo formatRupiah($row['jumlah']); ?></td>
+                                        <td><a href="kasir.php?page=hpp&hapus_modal=<?php echo $row['id_modal']; ?>" class="btn btn-sm btn-danger" onclick="return confirm('Yakin hapus?')"><i class="fa-solid fa-trash"></i></a></td>
+                                    </tr>
+                                <?php endwhile; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <?php elseif ($page === 'laporan') : ?>
+    <!-- ============================================
+         HALAMAN LAPORAN
+         ============================================ -->
+    <h4 class="fw-bold mb-4"><i class="fa-solid fa-chart-line me-2"></i>Laporan Penjualan</h4>
+    <div class="card shadow-sm mb-4">
+        <div class="card-body">
+            <form method="GET" class="row g-3 align-items-end">
+                <input type="hidden" name="page" value="laporan">
+                <div class="col-md-4">
+                    <label class="form-label">Dari Tanggal</label>
+                    <input type="date" name="dari" class="form-control" value="<?php echo $dari; ?>">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Sampai Tanggal</label>
+                    <input type="date" name="sampai" class="form-control" value="<?php echo $sampai; ?>">
+                </div>
+                <div class="col-md-4">
+                    <button type="submit" class="btn btn-primary w-100"><i class="fa-solid fa-filter me-1"></i>Filter</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <div class="row g-4 mb-4">
+        <div class="col-md-4">
+            <div class="stat-card">
+                <i class="fa-solid fa-receipt fa-2x mb-2"></i>
+                <h3><?php echo $total_transaksi; ?></h3>
+                <p>Total Transaksi</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="stat-card success">
+                <i class="fa-solid fa-money-bill-wave fa-2x mb-2"></i>
+                <h3><?php echo formatRupiah($total_penjualan); ?></h3>
+                <p>Total Penjualan</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="stat-card warning">
+                <i class="fa-solid fa-coins fa-2x mb-2"></i>
+                <h3><?php echo formatRupiah($total_hpp); ?></h3>
+                <p>Total HPP (Modal)</p>
+            </div>
+        </div>
+    </div>
+    <div class="row g-4 mb-4">
+        <div class="col-md-6">
+            <div class="stat-card warning">
+                <i class="fa-solid fa-money-bill-trend-down fa-2x mb-2"></i>
+                <h3><?php echo formatRupiah($total_pengeluaran_periode); ?></h3>
+                <p>Total Pengeluaran</p>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="stat-card info">
+                <i class="fa-solid fa-chart-line fa-2x mb-2"></i>
+                <h3><?php echo formatRupiah($total_keuntungan); ?></h3>
+                <p>Keuntungan Bersih (Setelah Pengeluaran)</p>
+            </div>
+        </div>
+    </div>
+    <div class="row g-4">
+        <div class="col-md-4">
+            <div class="card shadow-sm">
+                <div class="card-header">
+                    <h5 class="card-title fw-bold m-0"><i class="fa-solid fa-trophy me-2"></i>Menu Terlaris</h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead><tr><th>Menu</th><th>Qty</th><th>Penjualan</th></tr></thead>
+                            <tbody>
+                                <?php $no = 1; while ($row = mysqli_fetch_assoc($result_terlaris)) : ?>
+                                    <tr>
+                                        <td><span class="badge bg-primary me-1"><?php echo $no++; ?></span><?php echo htmlspecialchars($row['nama_menu']); ?></td>
+                                        <td><span class="badge bg-success"><?php echo $row['total_qty']; ?></span></td>
+                                        <td><?php echo formatRupiah($row['total_penjualan']); ?></td>
+                                    </tr>
+                                <?php endwhile; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-8">
+            <div class="card shadow-sm">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title fw-bold m-0"><i class="fa-solid fa-history me-2"></i>Riwayat Transaksi</h5>
+                    <button class="btn btn-sm btn-primary" onclick="window.print()"><i class="fa-solid fa-print me-1"></i>Cetak</button>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead><tr><th>No Transaksi</th><th>Tanggal</th><th>Item</th><th>Total</th><th>HPP</th><th>Keuntungan</th></tr></thead>
+                            <tbody>
+                                <?php while ($row = mysqli_fetch_assoc($result_riwayat)) : $keuntungan = $row['total_harga'] - $row['hpp_transaksi']; ?>
+                                    <tr>
+                                        <td><strong><?php echo $row['no_transaksi']; ?></strong></td>
+                                        <td><?php echo date('d/m/Y H:i', strtotime($row['tanggal'])); ?></td>
+                                        <td><?php echo $row['jumlah_item']; ?></td>
+                                        <td><?php echo formatRupiah($row['total_harga']); ?></td>
+                                        <td class="text-danger"><?php echo formatRupiah($row['hpp_transaksi']); ?></td>
+                                        <td class="text-success fw-bold"><?php echo formatRupiah($keuntungan); ?></td>
+                                    </tr>
+                                <?php endwhile; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    function filterMenu() {
+        let kategori = document.getElementById('filterKategori').value;
+        document.querySelectorAll('.menu-item').forEach(item => {
+            if (kategori === '' || item.dataset.kategori === kategori) {
+                item.style.display = '';
+            } else {
+                item.style.display = 'none';
+            }
+        });
+    }
+    function editMenu(menu) {
+        document.getElementById('edit_id').value = menu.id_menu;
+        document.getElementById('edit_nama').value = menu.nama_menu;
+        document.getElementById('edit_kategori').value = menu.kategori;
+        document.getElementById('edit_harga').value = menu.harga;
+        document.getElementById('edit_hpp').value = menu.hpp;
+        document.getElementById('edit_stok').value = menu.stok;
+        new bootstrap.Modal(document.getElementById('modalEdit')).show();
+    }
+</script>
+
+</body>
+</html>
