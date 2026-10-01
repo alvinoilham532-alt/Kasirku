@@ -1,0 +1,171 @@
+
+
+CREATE TABLE `tb_detail_transaksi` (
+  `id_detail` int(11) NOT NULL,
+  `id_transaksi` int(11) NOT NULL,
+  `id_menu` int(11) NOT NULL,
+  `jumlah_beli` int(11) NOT NULL,
+  `harga` int(11) NOT NULL,
+  `total` int(11) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Dumping data for table `tb_detail_transaksi`
+--
+
+INSERT INTO `tb_detail_transaksi` (`id_detail`, `id_transaksi`, `id_menu`, `jumlah_beli`, `harga`, `total`) VALUES
+(2, 2, 9, 1, 12000, 12000),
+(3, 2, 12, 1, 5000, 5000),
+(4, 2, 12, 1, 5000, 5000),
+(5, 3, 11, 1, 3000, 3000),
+(6, 3, 11, 1, 3000, 3000),
+(7, 4, 12, 1, 5000, 5000),
+(8, 4, 12, 1, 5000, 5000);
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `tb_menu`
+--
+
+CREATE TABLE `tb_menu` (
+  `id_menu` int(11) NOT NULL,
+  `nama_menu` varchar(100) NOT NULL,
+  `harga` int(11) NOT NULL,
+  `stok` int(11) NOT NULL DEFAULT 0,
+  `hpp` int(11) NOT NULL DEFAULT 0,
+  `kategori` varchar(50) DEFAULT 'Makanan',
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Dumping data for table `tb_menu`
+--
+
+INSERT INTO `tb_menu` (`id_menu`, `nama_menu`, `harga`, `stok`, `hpp`, `kategori`, `created_at`) VALUES
+(9, 'Nasi Goreng', 12000, 19, 9500, 'Makanan', '2026-10-01 04:56:31'),
+(10, 'Mie Goreng', 12000, 20, 10000, 'Makanan', '2026-10-01 04:57:36'),
+(11, 'Es teh', 3000, 38, 2000, 'Minuman', '2026-10-01 04:58:00'),
+(12, 'Coca Cola', 5000, 26, 3500, 'Minuman', '2026-10-01 04:58:36');
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `tb_modal`
+--
+
+CREATE TABLE `tb_modal` (
+  `id_modal` int(11) NOT NULL,
+  `tanggal` date NOT NULL,
+  `keterangan` varchar(255) DEFAULT NULL,
+  `jumlah` int(11) NOT NULL,
+  `jenis` enum('modal','pengeluaran') DEFAULT 'modal'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Dumping data for table `tb_modal`
+--
+
+INSERT INTO `tb_modal` (`id_modal`, `tanggal`, `keterangan`, `jumlah`, `jenis`) VALUES
+(6, '2026-10-01', 'Keuntungan Penjualan TRX-20261001-002', 5500, 'modal'),
+(7, '2026-10-01', 'Keuntungan Penjualan TRX-20261001-003', 2000, 'modal'),
+(8, '2026-10-01', 'Keuntungan Penjualan TRX-20261001-004', 3000, 'modal');
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `tb_transaksi`
+--
+
+CREATE TABLE `tb_transaksi` (
+  `id_transaksi` int(11) NOT NULL,
+  `no_transaksi` varchar(20) NOT NULL,
+  `tanggal` datetime DEFAULT current_timestamp(),
+  `total_harga` int(11) NOT NULL,
+  `bayar` int(11) NOT NULL,
+  `kembalian` int(11) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Dumping data for table `tb_transaksi`
+--
+
+INSERT INTO `tb_transaksi` (`id_transaksi`, `no_transaksi`, `tanggal`, `total_harga`, `bayar`, `kembalian`) VALUES
+(1, 'TRX-20261001-001', '2026-10-01 11:33:16', 20000, 50000, 30000),
+(2, 'TRX-20261001-002', '2026-10-01 11:59:25', 22000, 50000, 28000),
+(3, 'TRX-20261001-003', '2026-10-01 12:15:50', 6000, 20000, 14000),
+(4, 'TRX-20261001-004', '2026-10-01 12:18:16', 10000, 500000, 490000);
+
+--
+-- Indexes for dumped tables
+--
+
+--
+-- Indexes for table `tb_detail_transaksi`
+--
+ALTER TABLE `tb_detail_transaksi`
+  ADD PRIMARY KEY (`id_detail`),
+  ADD KEY `id_transaksi` (`id_transaksi`),
+  ADD KEY `id_menu` (`id_menu`);
+
+--
+-- Indexes for table `tb_menu`
+--
+ALTER TABLE `tb_menu`
+  ADD PRIMARY KEY (`id_menu`);
+
+--
+-- Indexes for table `tb_modal`
+--
+ALTER TABLE `tb_modal`
+  ADD PRIMARY KEY (`id_modal`);
+
+--
+-- Indexes for table `tb_transaksi`
+--
+ALTER TABLE `tb_transaksi`
+  ADD PRIMARY KEY (`id_transaksi`);
+
+--
+-- AUTO_INCREMENT for dumped tables
+--
+
+--
+-- AUTO_INCREMENT for table `tb_detail_transaksi`
+--
+ALTER TABLE `tb_detail_transaksi`
+  MODIFY `id_detail` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=9;
+
+--
+-- AUTO_INCREMENT for table `tb_menu`
+--
+ALTER TABLE `tb_menu`
+  MODIFY `id_menu` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=13;
+
+--
+-- AUTO_INCREMENT for table `tb_modal`
+--
+ALTER TABLE `tb_modal`
+  MODIFY `id_modal` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=9;
+
+--
+-- AUTO_INCREMENT for table `tb_transaksi`
+--
+ALTER TABLE `tb_transaksi`
+  MODIFY `id_transaksi` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=5;
+
+--
+-- Constraints for dumped tables
+--
+
+--
+-- Constraints for table `tb_detail_transaksi`
+--
+ALTER TABLE `tb_detail_transaksi`
+  ADD CONSTRAINT `tb_detail_transaksi_ibfk_1` FOREIGN KEY (`id_transaksi`) REFERENCES `tb_transaksi` (`id_transaksi`) ON DELETE CASCADE,
+  ADD CONSTRAINT `tb_detail_transaksi_ibfk_2` FOREIGN KEY (`id_menu`) REFERENCES `tb_menu` (`id_menu`) ON DELETE CASCADE;
+COMMIT;
+
+/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
